@@ -104,7 +104,7 @@ export default function AboutPage() {
                 <p className="mt-2 text-sm text-slate-300">{tier.summary}</p>
                 <ul className="mt-4 space-y-2 text-sm text-slate-300">
                   {tier.bullets.map((item) => (
-                    <li key={item}>• {item}</li>
+                    <li key={item}>â€¢ {item}</li>
                   ))}
                 </ul>
               </article>
