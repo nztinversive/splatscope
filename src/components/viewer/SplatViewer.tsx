@@ -350,23 +350,24 @@ export const SplatViewer = forwardRef<SplatViewerHandle, SplatViewerProps>(
 
         {mode !== "normal"
           ? semanticRegions.map((region, index) => {
-              const size = Math.max(24, Math.round(region.size * 2.8));
+              const size = Math.max(36, Math.round(region.size * 3.8));
               return (
                 <motion.div
                   key={`${region.x}-${region.y}-${index}`}
-                  initial={{ opacity: 0, scale: 0.6 }}
+                  initial={{ opacity: 0, scale: 0.4 }}
                   animate={{ opacity: 1, scale: 1 }}
-                  transition={{ delay: index * 0.06, duration: 0.3 }}
-                  className="pointer-events-none absolute rounded-full border"
+                  transition={{ delay: index * 0.08, duration: 0.4, type: "spring", stiffness: 200 }}
+                  className="pointer-events-none absolute rounded-full border-2"
                   style={{
                     left: `${region.x}%`,
                     top: `${region.y}%`,
                     width: `${size}px`,
                     height: `${size}px`,
                     borderColor: region.color,
-                    backgroundColor: `${region.color}33`,
+                    backgroundColor: `${region.color}22`,
                     transform: "translate(-50%, -50%)",
-                    animation: "semantic-pulse 2s ease-in-out infinite",
+                    boxShadow: `0 0 20px ${region.color}55, 0 0 40px ${region.color}33, inset 0 0 15px ${region.color}22`,
+                    animation: "semantic-pulse 2.5s ease-in-out infinite",
                   }}
                 />
               );
