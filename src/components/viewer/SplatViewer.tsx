@@ -11,6 +11,7 @@ import {
 import { motion } from "framer-motion";
 import * as SPLAT from "gsplat";
 import { SceneDefinition, SemanticRegion, Vector3Like, ViewMode } from "@/types";
+import { buildShapePolygon } from "@/lib/search";
 
 type LoadState = "idle" | "loading" | "ready" | "error";
 
@@ -50,6 +51,62 @@ function lerp(start: number, end: number, alpha: number): number {
   return start + (end - start) * alpha;
 }
 
+/** Project a 3D world position to 2D screen percentage using camera matrices */
+function projectToScreen(
+  target: Vector3Like,
+  camera: SPLAT.Camera,
+  width: number,
+  height: number
+): { x: number; y: number } | null {
+  // Build view matrix from camera position + rotation
+  const pos = camera.position;
+  const rot = camera.rotation;
+
+  // Get forward/right/up from quaternion
+  const qx = rot.x, qy = rot.y, qz = rot.z, qw = rot.w;
+
+  // Direction from camera to target
+  const dx = target.x - pos.x;
+  const dy = target.y - pos.y;
+  const dz = target.z - pos.z;
+
+  // Rotate direction by inverse quaternion to get camera-space coords
+  // Inverse quaternion: conjugate for unit quaternion
+  const ix = -qx, iy = -qy, iz = -qz, iw = qw;
+
+  // Quaternion multiply: inv_q * vec (as quaternion with w=0) * q
+  // First: inv_q * (0, dx, dy, dz)
+  const tw = -ix * dx - iy * dy - iz * dz;
+  const tx = iw * dx + iy * dz - iz * dy;
+  const ty = iw * dy + iz * dx - ix * dz;
+  const tz = iw * dz + ix * dy - iy * dx;
+
+  // Then: result * q
+  const cx = tw * (-qx) + tx * qw + ty * (-qz) - tz * (-qy);
+  const cy = tw * (-qy) + ty * qw + tz * (-qx) - tx * (-qz);
+  const cz = tw * (-qz) + tz * qw + tx * (-qy) - ty * (-qx);
+
+  // cz is depth (positive = in front in gsplat's convention, but let's check both)
+  // gsplat uses a right-hand system; forward is -Z typically
+  // If behind camera, skip
+  if (cz >= -0.01) return null; // behind camera
+
+  // Perspective projection
+  const fov = camera.data.fx > 0 ? camera.data.fx : width; // focal length in pixels
+  const fy = camera.data.fy > 0 ? camera.data.fy : fov;
+
+  const screenX = (cx / -cz) * fov + width / 2;
+  const screenY = (cy / -cz) * fy + height / 2;
+
+  // Convert to percentage
+  const px = (screenX / width) * 100;
+  const py = (screenY / height) * 100;
+
+  if (px < -20 || px > 120 || py < -20 || py > 120) return null;
+
+  return { x: px, y: py };
+}
+
 export const SplatViewer = forwardRef<SplatViewerHandle, SplatViewerProps>(
   function SplatViewer(
     {
@@ -79,6 +136,16 @@ export const SplatViewer = forwardRef<SplatViewerHandle, SplatViewerProps>(
     const autoRotationRef = useRef(0);
     const [loadState, setLoadState] = useState<LoadState>("idle");
     const [loadProgress, setLoadProgress] = useState(0);
+    const [projectedPolygons, setProjectedPolygons] = useState<
+      { polygon: string; color: string; key: string }[]
+    >([]);
+    const semanticRegionsRef = useRef(semanticRegions);
+
+    // Keep the ref in sync
+    useEffect(() => {
+      semanticRegionsRef.current = semanticRegions;
+      if (semanticRegions.length === 0) setProjectedPolygons([]);
+    }, [semanticRegions]);
 
     const setStateAndNotify = useCallback(
       (state: LoadState) => {
@@ -236,6 +303,30 @@ export const SplatViewer = forwardRef<SplatViewerHandle, SplatViewerProps>(
         }
 
         rendererInstance.render(sceneInstance, cameraInstance);
+
+        // Project semantic regions to screen coordinates every 6 frames
+        if (semanticRegionsRef.current.length > 0 && Math.round(time / 100) % 2 === 0) {
+          const container = containerRef.current;
+          if (container) {
+            const w = container.clientWidth;
+            const h = container.clientHeight;
+            const projected: { polygon: string; color: string; key: string }[] = [];
+            for (const region of semanticRegionsRef.current) {
+              if (!region.target || !region.label) continue;
+              const screen = projectToScreen(region.target, cameraInstance, w, h);
+              if (screen) {
+                const poly = buildShapePolygon(screen.x, screen.y, region.size, region.label);
+                projected.push({
+                  polygon: poly,
+                  color: region.color,
+                  key: `${region.label}-${region.target.x}-${region.target.y}`,
+                });
+              }
+            }
+            setProjectedPolygons(projected);
+          }
+        }
+
         animationRef.current = requestAnimationFrame(frame);
       };
 
@@ -348,7 +439,7 @@ export const SplatViewer = forwardRef<SplatViewerHandle, SplatViewerProps>(
           </>
         ) : null}
 
-        {mode !== "normal" && semanticRegions.length > 0 ? (
+        {mode !== "normal" && projectedPolygons.length > 0 ? (
           <svg
             className="pointer-events-none absolute inset-0 h-full w-full"
             viewBox="0 0 100 100"
@@ -356,10 +447,10 @@ export const SplatViewer = forwardRef<SplatViewerHandle, SplatViewerProps>(
             xmlns="http://www.w3.org/2000/svg"
           >
             <defs>
-              {semanticRegions.map((region, index) => (
+              {projectedPolygons.map((_, index) => (
                 <filter key={`glow-${index}`} id={`region-glow-${index}`} x="-50%" y="-50%" width="200%" height="200%">
                   <feGaussianBlur stdDeviation="0.8" result="blur" />
-                  <feFlood floodColor={region.color} floodOpacity="0.6" result="color" />
+                  <feFlood floodColor={projectedPolygons[index].color} floodOpacity="0.6" result="color" />
                   <feComposite in="color" in2="blur" operator="in" result="glow" />
                   <feMerge>
                     <feMergeNode in="glow" />
@@ -369,30 +460,18 @@ export const SplatViewer = forwardRef<SplatViewerHandle, SplatViewerProps>(
                 </filter>
               ))}
             </defs>
-            {semanticRegions.map((region, index) => {
-              const points = region.polygon;
-              if (!points) return null;
-              return (
-                <motion.polygon
-                  key={`region-${region.x}-${region.y}-${index}`}
-                  points={points}
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: [0, 0.7, 0.5, 0.7] }}
-                  transition={{
-                    delay: index * 0.1,
-                    duration: 3,
-                    repeat: Infinity,
-                    repeatType: "reverse",
-                  }}
-                  fill={`${region.color}30`}
-                  stroke={region.color}
-                  strokeWidth="0.3"
-                  strokeLinejoin="round"
-                  filter={`url(#region-glow-${index})`}
-                  style={{ mixBlendMode: "screen" }}
-                />
-              );
-            })}
+            {projectedPolygons.map((item, index) => (
+              <polygon
+                key={item.key}
+                points={item.polygon}
+                fill={`${item.color}35`}
+                stroke={item.color}
+                strokeWidth="0.3"
+                strokeLinejoin="round"
+                filter={`url(#region-glow-${index})`}
+                style={{ mixBlendMode: "screen", opacity: 0.7 }}
+              />
+            ))}
           </svg>
         ) : null}
 

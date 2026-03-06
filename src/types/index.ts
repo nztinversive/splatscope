@@ -20,10 +20,10 @@ export interface SemanticRegion {
   color: string;
   /** Polygon points as "x,y x,y ..." percentage coords for SVG highlight shape */
   polygon?: string;
-  /** Width multiplier relative to size (default 1 = circular) */
-  widthRatio?: number;
-  /** Height multiplier relative to size (default 1 = circular) */
-  heightRatio?: number;
+  /** Label used to pick the shape template */
+  label?: string;
+  /** 3D target position for projection */
+  target?: Vector3Like;
 }
 
 export interface SemanticResult {

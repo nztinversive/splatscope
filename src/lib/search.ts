@@ -92,7 +92,7 @@ function getShapeKey(label: string): string {
 }
 
 /** Build polygon string from a shape template, positioned at center with given scale */
-function buildShapePolygon(
+export function buildShapePolygon(
   cx: number,
   cy: number,
   size: number,
@@ -262,6 +262,8 @@ export async function runMockSemanticSearch(
         size: item.region.size,
         color: COLOR_SWATCH[i % COLOR_SWATCH.length],
         polygon: buildShapePolygon(item.region.x, item.region.y, item.region.size, item.region.label),
+        label: item.region.label,
+        target: item.region.target,
       },
     };
   });
