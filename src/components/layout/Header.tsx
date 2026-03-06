@@ -8,6 +8,7 @@ import { Sparkles } from "lucide-react";
 const NAV_ITEMS = [
   { href: "/", label: "Home" },
   { href: "/explore", label: "Explore" },
+  { href: "/upload", label: "Upload" },
   { href: "/gallery", label: "Gallery" },
   { href: "/about", label: "About" },
 ];

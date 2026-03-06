@@ -2,11 +2,16 @@
 
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Sparkles } from "lucide-react";
-import { DEMO_SCENES, getSceneById } from "@/lib/scenes";
+import { DEFAULT_SCENE_ID, DEMO_SCENES, getSceneById } from "@/lib/scenes";
+import {
+  getUploadedSceneDefinitions,
+  USER_SCENES_STORAGE_KEY,
+  USER_SCENES_UPDATED_EVENT,
+} from "@/lib/userScenes";
 import { runMockSemanticSearch } from "@/lib/search";
-import { QueryHistoryEntry, SemanticResult, ViewMode } from "@/types";
+import { QueryHistoryEntry, SceneDefinition, SemanticResult, ViewMode } from "@/types";
 import { InfoPanel } from "./InfoPanel";
 import { SceneSelector } from "./SceneSelector";
 import { SearchBar } from "./SearchBar";
@@ -31,8 +36,10 @@ interface ExploreExperienceProps {
 
 export function ExploreExperience({ initialSceneId }: ExploreExperienceProps) {
   const router = useRouter();
+  const [uploadedScenes, setUploadedScenes] = useState<SceneDefinition[]>([]);
+  const [uploadedScenesReady, setUploadedScenesReady] = useState(false);
   const [selectedSceneId, setSelectedSceneId] = useState(
-    getSceneById(initialSceneId).id
+    initialSceneId ?? DEFAULT_SCENE_ID
   );
   const [viewMode, setViewMode] = useState<ViewMode>("normal");
   const [isSearching, setIsSearching] = useState(false);
@@ -45,7 +52,16 @@ export function ExploreExperience({ initialSceneId }: ExploreExperienceProps) {
   const viewerRef = useRef<SplatViewerHandle | null>(null);
   const searchTokenRef = useRef(0);
 
-  const selectedScene = useMemo(() => getSceneById(selectedSceneId), [selectedSceneId]);
+  const availableScenes = useMemo(
+    () => [...DEMO_SCENES, ...uploadedScenes],
+    [uploadedScenes]
+  );
+  const selectedScene = useMemo(
+    () =>
+      availableScenes.find((scene) => scene.id === selectedSceneId) ??
+      getSceneById(DEFAULT_SCENE_ID),
+    [availableScenes, selectedSceneId]
+  );
   const semanticRegions = useMemo(
     () => results.slice(0, 6).map((result) => result.region),
     [results]
@@ -53,6 +69,34 @@ export function ExploreExperience({ initialSceneId }: ExploreExperienceProps) {
   const handleLoadStateChange = useCallback((state: "idle" | "loading" | "ready" | "error") => {
     setIsSceneLoading(state === "loading");
   }, []);
+
+  const syncUploadedScenes = useCallback(() => {
+    setUploadedScenes(getUploadedSceneDefinitions());
+  }, []);
+
+  useEffect(() => {
+    syncUploadedScenes();
+    setUploadedScenesReady(true);
+
+    const handleStorageChange = (event: StorageEvent) => {
+      if (event.key && event.key !== USER_SCENES_STORAGE_KEY) {
+        return;
+      }
+      syncUploadedScenes();
+    };
+
+    const handleScenesUpdated = () => {
+      syncUploadedScenes();
+    };
+
+    window.addEventListener("storage", handleStorageChange);
+    window.addEventListener(USER_SCENES_UPDATED_EVENT, handleScenesUpdated);
+
+    return () => {
+      window.removeEventListener("storage", handleStorageChange);
+      window.removeEventListener(USER_SCENES_UPDATED_EVENT, handleScenesUpdated);
+    };
+  }, [syncUploadedScenes]);
 
   const handleSceneChange = useCallback(
     (sceneId: string) => {
@@ -69,6 +113,17 @@ export function ExploreExperience({ initialSceneId }: ExploreExperienceProps) {
     },
     [router]
   );
+
+  useEffect(() => {
+    if (!uploadedScenesReady) {
+      return;
+    }
+
+    const sceneExists = availableScenes.some((scene) => scene.id === selectedSceneId);
+    if (!sceneExists) {
+      handleSceneChange(DEFAULT_SCENE_ID);
+    }
+  }, [availableScenes, handleSceneChange, selectedSceneId, uploadedScenesReady]);
 
   const handleSearch = useCallback(
     async (query: string) => {
@@ -164,7 +219,7 @@ export function ExploreExperience({ initialSceneId }: ExploreExperienceProps) {
 
       <div className="absolute left-4 top-[5.5rem] z-20 flex flex-col gap-3">
         <SceneSelector
-          scenes={DEMO_SCENES}
+          scenes={availableScenes}
           selectedSceneId={selectedScene.id}
           onSceneChange={handleSceneChange}
         />

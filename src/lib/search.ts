@@ -1,4 +1,4 @@
-import { SceneDefinition, SemanticResult, SemanticSearchResponse, SemanticRegion } from "@/types";
+import { SceneDefinition, SemanticResult, SemanticSearchResponse } from "@/types";
 
 const COLOR_SWATCH = ["#3B82F6", "#06B6D4", "#22D3EE", "#38BDF8", "#60A5FA"];
 

@@ -1,4 +1,9 @@
-export type SceneCategory = "Architecture" | "Nature" | "Industrial" | "Urban";
+export type SceneCategory =
+  | "Architecture"
+  | "Nature"
+  | "Industrial"
+  | "Urban"
+  | "Custom";
 
 export type ViewMode = "normal" | "semantic" | "split";
 
@@ -54,4 +59,14 @@ export interface SceneDefinition {
   previewImage: string;
   cameraTarget: Vector3Like;
   cameraOffset: Vector3Like;
+}
+
+export interface UploadedSceneRecord {
+  id: string;
+  name: string;
+  filename: string;
+  extension: "splat" | "ply";
+  blobUrl: string;
+  sizeBytes: number;
+  createdAt: string;
 }

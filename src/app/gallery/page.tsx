@@ -1,3 +1,4 @@
+import { MyScenesSection } from "@/components/gallery/MyScenesSection";
 import { SceneCard } from "@/components/gallery/SceneCard";
 import { Footer } from "@/components/layout/Footer";
 import { Header } from "@/components/layout/Header";
@@ -38,6 +39,8 @@ export default function GalleryPage() {
             <SceneCard key={scene.id} scene={scene} index={index} />
           ))}
         </section>
+
+        <MyScenesSection />
       </main>
 
       <Footer />
