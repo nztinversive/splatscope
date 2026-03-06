@@ -71,6 +71,7 @@ export interface SegmentMask {
   polygon: string;
   confidence: number;
   color: string;
+  label?: string;
 }
 
 export interface SegmentSearchResponse {

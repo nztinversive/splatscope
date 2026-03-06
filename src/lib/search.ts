@@ -279,13 +279,14 @@ export async function runMockSemanticSearch(
 
 /**
  * Run real SAM3 segmentation on a viewport capture.
- * Returns polygon masks in percentage coordinates ready for SVG overlay.
+ * Returns polygon masks in percentage coordinates ready for canvas overlay.
  */
 export async function runRealSegmentation(
   query: string,
   viewportImage: string, // base64 PNG from canvas export
   width: number,
-  height: number
+  height: number,
+  label: string = query
 ): Promise<SegmentMask[]> {
   const startedAt = Date.now();
 
@@ -307,11 +308,13 @@ export async function runRealSegmentation(
     }
 
     const data = await response.json();
+    const resolvedLabel = label.trim() || query;
     const masks: SegmentMask[] = (data.masks || []).map(
       (mask: { polygon: string; confidence: number }, i: number) => ({
         polygon: mask.polygon,
         confidence: mask.confidence,
         color: COLOR_SWATCH[i % COLOR_SWATCH.length],
+        label: resolvedLabel,
       })
     );
 

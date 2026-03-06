@@ -52,6 +52,8 @@ export function ExploreExperience({ initialSceneId }: ExploreExperienceProps) {
   const [segmentMasks, setSegmentMasks] = useState<SegmentMask[]>([]);
   const viewerRef = useRef<SplatViewerHandle | null>(null);
   const searchTokenRef = useRef(0);
+  const lastQueryRef = useRef<string | null>(null);
+  const reSegmentingRef = useRef(false);
 
   const availableScenes = useMemo(
     () => [...DEMO_SCENES, ...uploadedScenes],
@@ -148,11 +150,18 @@ export function ExploreExperience({ initialSceneId }: ExploreExperienceProps) {
           img.src = viewportPng;
         });
 
-        const masks = await runRealSegmentation(query, viewportPng, dimensions.w, dimensions.h);
+        const masks = await runRealSegmentation(
+          query,
+          viewportPng,
+          dimensions.w,
+          dimensions.h,
+          query
+        );
         if (searchTokenRef.current !== token) return;
 
         if (masks.length > 0) {
           usedRealSegmentation = true;
+          lastQueryRef.current = query;
           setSegmentMasks(masks);
           setViewMode("semantic");
           setIsSearching(false);
@@ -204,6 +213,36 @@ export function ExploreExperience({ initialSceneId }: ExploreExperienceProps) {
     [selectedScene]
   );
 
+  const handleCameraStop = useCallback(async () => {
+    const query = lastQueryRef.current;
+    if (!query || reSegmentingRef.current || isSearching) return;
+
+    const viewportPng = viewerRef.current?.exportPNG();
+    if (!viewportPng) return;
+
+    reSegmentingRef.current = true;
+    setSummary(`Re-analyzing "${query}" from new angle...`);
+
+    try {
+      const img = new Image();
+      const dimensions = await new Promise<{ w: number; h: number }>((resolve) => {
+        img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
+        img.onerror = () => resolve({ w: 1280, h: 720 });
+        img.src = viewportPng;
+      });
+
+      const masks = await runRealSegmentation(query, viewportPng, dimensions.w, dimensions.h, query);
+      if (masks.length > 0) {
+        setSegmentMasks(masks);
+        setSummary(`SAM3 found ${masks.length} region${masks.length > 1 ? "s" : ""} matching "${query}"`);
+      }
+    } catch {
+      // silently fail re-segmentation
+    } finally {
+      reSegmentingRef.current = false;
+    }
+  }, [isSearching]);
+
   const handleResultClick = useCallback((result: SemanticResult) => {
     viewerRef.current?.focusOnTarget(result.target);
     setSummary(
@@ -247,6 +286,7 @@ export function ExploreExperience({ initialSceneId }: ExploreExperienceProps) {
         onLoadProgress={setSceneLoadProgress}
         onLoadStateChange={handleLoadStateChange}
         onSceneLoaded={setRuntimePointCount}
+        onCameraStop={handleCameraStop}
       />
 
       <div className="pointer-events-none absolute left-4 top-4 z-20 flex items-center gap-2 rounded-xl border border-slate-700/80 bg-slate-950/60 px-3 py-2 text-sm text-slate-100">

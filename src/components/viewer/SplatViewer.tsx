@@ -27,6 +27,7 @@ interface SplatViewerProps {
   onLoadProgress?: (progress: number) => void;
   onLoadStateChange?: (state: LoadState) => void;
   onSceneLoaded?: (pointCount: number) => void;
+  onCameraStop?: () => void;
 }
 
 interface FlightState {
@@ -122,6 +123,7 @@ export const SplatViewer = forwardRef<SplatViewerHandle, SplatViewerProps>(
       onLoadProgress,
       onLoadStateChange,
       onSceneLoaded,
+      onCameraStop,
     },
     ref
   ) {
@@ -136,6 +138,10 @@ export const SplatViewer = forwardRef<SplatViewerHandle, SplatViewerProps>(
     const loadTokenRef = useRef(0);
     const flightRef = useRef<FlightState | null>(null);
     const autoRotationRef = useRef(0);
+    const lastCamPosRef = useRef<{ x: number; y: number; z: number } | null>(null);
+    const cameraStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const onCameraStopRef = useRef(onCameraStop);
+    onCameraStopRef.current = onCameraStop;
     const [loadState, setLoadState] = useState<LoadState>("idle");
     const [loadProgress, setLoadProgress] = useState(0);
     const [projectedPolygons, setProjectedPolygons] = useState<
@@ -189,7 +195,21 @@ export const SplatViewer = forwardRef<SplatViewerHandle, SplatViewerProps>(
       ref,
       () => ({
         focusOnTarget,
-        exportPNG: () => rendererRef.current?.canvas.toDataURL("image/png") ?? null,
+        exportPNG: () => {
+          const canvas = rendererRef.current?.canvas;
+          if (!canvas) return null;
+          // Downscale to max 1024px wide for SAM3 performance
+          const maxW = 1024;
+          if (canvas.width <= maxW) return canvas.toDataURL("image/jpeg", 0.85);
+          const scale = maxW / canvas.width;
+          const offscreen = document.createElement("canvas");
+          offscreen.width = maxW;
+          offscreen.height = Math.round(canvas.height * scale);
+          const ctx = offscreen.getContext("2d");
+          if (!ctx) return canvas.toDataURL("image/jpeg", 0.85);
+          ctx.drawImage(canvas, 0, 0, offscreen.width, offscreen.height);
+          return offscreen.toDataURL("image/jpeg", 0.85);
+        },
       }),
       [focusOnTarget]
     );
@@ -306,6 +326,18 @@ export const SplatViewer = forwardRef<SplatViewerHandle, SplatViewerProps>(
 
         rendererInstance.render(sceneInstance, cameraInstance);
 
+        // Detect camera stop for re-segmentation (debounced 800ms)
+        const cp = cameraInstance.position;
+        const lp = lastCamPosRef.current;
+        const moved = !lp || Math.abs(cp.x - lp.x) > 0.001 || Math.abs(cp.y - lp.y) > 0.001 || Math.abs(cp.z - lp.z) > 0.001;
+        if (moved) {
+          lastCamPosRef.current = { x: cp.x, y: cp.y, z: cp.z };
+          if (cameraStopTimerRef.current) clearTimeout(cameraStopTimerRef.current);
+          cameraStopTimerRef.current = setTimeout(() => {
+            onCameraStopRef.current?.();
+          }, 800);
+        }
+
         // Project semantic regions to screen coordinates every 6 frames
         if (semanticRegionsRef.current.length > 0 && Math.round(time / 100) % 2 === 0) {
           const container = containerRef.current;
@@ -338,6 +370,7 @@ export const SplatViewer = forwardRef<SplatViewerHandle, SplatViewerProps>(
         if (animationRef.current) {
           cancelAnimationFrame(animationRef.current);
         }
+        if (cameraStopTimerRef.current) clearTimeout(cameraStopTimerRef.current);
         resizeObserverRef.current?.disconnect();
         controls.dispose();
         renderer.dispose();
@@ -477,7 +510,7 @@ export const SplatViewer = forwardRef<SplatViewerHandle, SplatViewerProps>(
           </svg>
         ) : null}
 
-        {/* SAM3 real segmentation masks */}
+        {/* SAM3 real segmentation masks — clean fills, no glow */}
         {mode !== "normal" && segmentMasks.length > 0 ? (
           <svg
             className="pointer-events-none absolute inset-0 h-full w-full"
@@ -485,39 +518,62 @@ export const SplatViewer = forwardRef<SplatViewerHandle, SplatViewerProps>(
             preserveAspectRatio="none"
             xmlns="http://www.w3.org/2000/svg"
           >
-            <defs>
-              {segmentMasks.map((mask, index) => (
-                <filter key={`sam-glow-${index}`} id={`sam-glow-${index}`} x="-20%" y="-20%" width="140%" height="140%">
-                  <feGaussianBlur stdDeviation="0.4" result="blur" />
-                  <feFlood floodColor={mask.color} floodOpacity="0.5" result="color" />
-                  <feComposite in="color" in2="blur" operator="in" result="glow" />
-                  <feMerge>
-                    <feMergeNode in="glow" />
-                    <feMergeNode in="SourceGraphic" />
-                  </feMerge>
-                </filter>
-              ))}
-            </defs>
-            {segmentMasks.map((mask, index) => (
-              <motion.polygon
-                key={`sam-mask-${index}`}
-                points={mask.polygon}
-                initial={{ opacity: 0 }}
-                animate={{ opacity: [0, 0.65, 0.5, 0.65] }}
-                transition={{
-                  delay: index * 0.08,
-                  duration: 3,
-                  repeat: Infinity,
-                  repeatType: "reverse",
-                }}
-                fill={`${mask.color}40`}
-                stroke={mask.color}
-                strokeWidth="0.15"
-                strokeLinejoin="round"
-                filter={`url(#sam-glow-${index})`}
-                style={{ mixBlendMode: "screen" }}
-              />
-            ))}
+            {segmentMasks.map((mask, index) => {
+              // Parse polygon to find centroid for label
+              const points = mask.polygon.split(" ").map(p => {
+                const [x, y] = p.split(",").map(Number);
+                return { x, y };
+              });
+              const cx = points.reduce((s, p) => s + p.x, 0) / points.length;
+              const cy = points.reduce((s, p) => s + p.y, 0) / points.length;
+              const confPct = Math.round(mask.confidence * 100);
+              const labelText = mask.label ? `${mask.label} · ${confPct}%` : `${confPct}%`;
+
+              return (
+                <g key={`sam-mask-${index}`}>
+                  <motion.polygon
+                    points={mask.polygon}
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    transition={{ delay: index * 0.06, duration: 0.25 }}
+                    fill={mask.color}
+                    fillOpacity={0.35}
+                    stroke={mask.color}
+                    strokeOpacity={0.8}
+                    strokeWidth="0.25"
+                    strokeLinejoin="round"
+                  />
+                  {mask.confidence > 0.5 && (
+                    <motion.g
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      transition={{ delay: index * 0.06 + 0.15, duration: 0.2 }}
+                    >
+                      <rect
+                        x={cx - labelText.length * 0.38}
+                        y={cy - 1.2}
+                        width={labelText.length * 0.76}
+                        height={2.2}
+                        rx={0.6}
+                        fill="#1a1a2e"
+                        fillOpacity={0.9}
+                      />
+                      <text
+                        x={cx}
+                        y={cy + 0.45}
+                        textAnchor="middle"
+                        fill="white"
+                        fontSize="1.4"
+                        fontWeight="bold"
+                        fontFamily="system-ui, sans-serif"
+                      >
+                        {labelText}
+                      </text>
+                    </motion.g>
+                  )}
+                </g>
+              );
+            })}
           </svg>
         ) : null}
 

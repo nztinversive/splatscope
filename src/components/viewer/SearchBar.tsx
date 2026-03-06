@@ -63,7 +63,7 @@ export function SearchBar({
               Running semantic analysis across the point cloud...
             </motion.span>
           ) : (
-            summary ?? "Semantic search is mocked for MVP. UI interactions reflect real workflows."
+            summary ?? "Search any object in the scene — powered by SAM3 vision segmentation."
           )}
         </div>
       </form>
