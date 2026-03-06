@@ -1,4 +1,4 @@
-import { SceneDefinition, SemanticResult, SemanticSearchResponse } from "@/types";
+import { SceneDefinition, SemanticResult, SemanticSearchResponse, SegmentMask } from "@/types";
 
 const COLOR_SWATCH = ["#3B82F6", "#06B6D4", "#22D3EE", "#38BDF8", "#60A5FA"];
 
@@ -275,4 +275,53 @@ export async function runMockSemanticSearch(
     totalMatches: semanticResults.length + Math.floor(Math.random() * 8),
     results: semanticResults,
   };
+}
+
+/**
+ * Run real SAM3 segmentation on a viewport capture.
+ * Returns polygon masks in percentage coordinates ready for SVG overlay.
+ */
+export async function runRealSegmentation(
+  query: string,
+  viewportImage: string, // base64 PNG from canvas export
+  width: number,
+  height: number
+): Promise<SegmentMask[]> {
+  const startedAt = Date.now();
+
+  try {
+    const response = await fetch("/api/segment", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        image: viewportImage,
+        query,
+        width,
+        height,
+      }),
+    });
+
+    if (!response.ok) {
+      console.warn("SAM3 API unavailable, falling back to mock");
+      return [];
+    }
+
+    const data = await response.json();
+    const masks: SegmentMask[] = (data.masks || []).map(
+      (mask: { polygon: string; confidence: number }, i: number) => ({
+        polygon: mask.polygon,
+        confidence: mask.confidence,
+        color: COLOR_SWATCH[i % COLOR_SWATCH.length],
+      })
+    );
+
+    console.log(
+      `SAM3 segmentation: "${query}" → ${masks.length} masks in ${Date.now() - startedAt}ms`
+    );
+
+    return masks;
+  } catch (err) {
+    console.warn("SAM3 segmentation failed:", err);
+    return [];
+  }
 }

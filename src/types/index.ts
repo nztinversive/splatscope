@@ -67,6 +67,19 @@ export interface SceneDefinition {
   cameraOffset: Vector3Like;
 }
 
+export interface SegmentMask {
+  polygon: string;
+  confidence: number;
+  color: string;
+}
+
+export interface SegmentSearchResponse {
+  query: string;
+  maskCount: number;
+  masks: SegmentMask[];
+  durationMs: number;
+}
+
 export interface UploadedSceneRecord {
   id: string;
   name: string;

@@ -10,7 +10,7 @@ import {
 } from "react";
 import { motion } from "framer-motion";
 import * as SPLAT from "gsplat";
-import { SceneDefinition, SemanticRegion, Vector3Like, ViewMode } from "@/types";
+import { SceneDefinition, SegmentMask, SemanticRegion, Vector3Like, ViewMode } from "@/types";
 import { buildShapePolygon } from "@/lib/search";
 
 type LoadState = "idle" | "loading" | "ready" | "error";
@@ -23,6 +23,7 @@ interface SplatViewerProps {
   interactive?: boolean;
   showStatusOverlay?: boolean;
   semanticRegions?: SemanticRegion[];
+  segmentMasks?: SegmentMask[];
   onLoadProgress?: (progress: number) => void;
   onLoadStateChange?: (state: LoadState) => void;
   onSceneLoaded?: (pointCount: number) => void;
@@ -117,6 +118,7 @@ export const SplatViewer = forwardRef<SplatViewerHandle, SplatViewerProps>(
       interactive = true,
       showStatusOverlay = true,
       semanticRegions = [],
+      segmentMasks = [],
       onLoadProgress,
       onLoadStateChange,
       onSceneLoaded,
@@ -470,6 +472,50 @@ export const SplatViewer = forwardRef<SplatViewerHandle, SplatViewerProps>(
                 strokeLinejoin="round"
                 filter={`url(#region-glow-${index})`}
                 style={{ mixBlendMode: "screen", opacity: 0.7 }}
+              />
+            ))}
+          </svg>
+        ) : null}
+
+        {/* SAM3 real segmentation masks */}
+        {mode !== "normal" && segmentMasks.length > 0 ? (
+          <svg
+            className="pointer-events-none absolute inset-0 h-full w-full"
+            viewBox="0 0 100 100"
+            preserveAspectRatio="none"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <defs>
+              {segmentMasks.map((mask, index) => (
+                <filter key={`sam-glow-${index}`} id={`sam-glow-${index}`} x="-20%" y="-20%" width="140%" height="140%">
+                  <feGaussianBlur stdDeviation="0.4" result="blur" />
+                  <feFlood floodColor={mask.color} floodOpacity="0.5" result="color" />
+                  <feComposite in="color" in2="blur" operator="in" result="glow" />
+                  <feMerge>
+                    <feMergeNode in="glow" />
+                    <feMergeNode in="SourceGraphic" />
+                  </feMerge>
+                </filter>
+              ))}
+            </defs>
+            {segmentMasks.map((mask, index) => (
+              <motion.polygon
+                key={`sam-mask-${index}`}
+                points={mask.polygon}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: [0, 0.65, 0.5, 0.65] }}
+                transition={{
+                  delay: index * 0.08,
+                  duration: 3,
+                  repeat: Infinity,
+                  repeatType: "reverse",
+                }}
+                fill={`${mask.color}40`}
+                stroke={mask.color}
+                strokeWidth="0.15"
+                strokeLinejoin="round"
+                filter={`url(#sam-glow-${index})`}
+                style={{ mixBlendMode: "screen" }}
               />
             ))}
           </svg>
