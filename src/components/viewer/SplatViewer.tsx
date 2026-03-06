@@ -348,31 +348,53 @@ export const SplatViewer = forwardRef<SplatViewerHandle, SplatViewerProps>(
           </>
         ) : null}
 
-        {mode !== "normal"
-          ? semanticRegions.map((region, index) => {
-              const size = Math.max(36, Math.round(region.size * 3.8));
+        {mode !== "normal" && semanticRegions.length > 0 ? (
+          <svg
+            className="pointer-events-none absolute inset-0 h-full w-full"
+            viewBox="0 0 100 100"
+            preserveAspectRatio="none"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <defs>
+              {semanticRegions.map((region, index) => (
+                <filter key={`glow-${index}`} id={`region-glow-${index}`} x="-50%" y="-50%" width="200%" height="200%">
+                  <feGaussianBlur stdDeviation="0.8" result="blur" />
+                  <feFlood floodColor={region.color} floodOpacity="0.6" result="color" />
+                  <feComposite in="color" in2="blur" operator="in" result="glow" />
+                  <feMerge>
+                    <feMergeNode in="glow" />
+                    <feMergeNode in="glow" />
+                    <feMergeNode in="SourceGraphic" />
+                  </feMerge>
+                </filter>
+              ))}
+            </defs>
+            {semanticRegions.map((region, index) => {
+              const points = region.polygon;
+              if (!points) return null;
               return (
-                <motion.div
-                  key={`${region.x}-${region.y}-${index}`}
-                  initial={{ opacity: 0, scale: 0.4 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  transition={{ delay: index * 0.08, duration: 0.4, type: "spring", stiffness: 200 }}
-                  className="pointer-events-none absolute rounded-full border-2"
-                  style={{
-                    left: `${region.x}%`,
-                    top: `${region.y}%`,
-                    width: `${size}px`,
-                    height: `${size}px`,
-                    borderColor: region.color,
-                    backgroundColor: `${region.color}22`,
-                    transform: "translate(-50%, -50%)",
-                    boxShadow: `0 0 20px ${region.color}55, 0 0 40px ${region.color}33, inset 0 0 15px ${region.color}22`,
-                    animation: "semantic-pulse 2.5s ease-in-out infinite",
+                <motion.polygon
+                  key={`region-${region.x}-${region.y}-${index}`}
+                  points={points}
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: [0, 0.7, 0.5, 0.7] }}
+                  transition={{
+                    delay: index * 0.1,
+                    duration: 3,
+                    repeat: Infinity,
+                    repeatType: "reverse",
                   }}
+                  fill={`${region.color}30`}
+                  stroke={region.color}
+                  strokeWidth="0.3"
+                  strokeLinejoin="round"
+                  filter={`url(#region-glow-${index})`}
+                  style={{ mixBlendMode: "screen" }}
                 />
               );
-            })
-          : null}
+            })}
+          </svg>
+        ) : null}
 
         {showStatusOverlay && loadState !== "ready" ? (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center">

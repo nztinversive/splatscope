@@ -18,6 +18,12 @@ export interface SemanticRegion {
   y: number;
   size: number;
   color: string;
+  /** Polygon points as "x,y x,y ..." percentage coords for SVG highlight shape */
+  polygon?: string;
+  /** Width multiplier relative to size (default 1 = circular) */
+  widthRatio?: number;
+  /** Height multiplier relative to size (default 1 = circular) */
+  heightRatio?: number;
 }
 
 export interface SemanticResult {
