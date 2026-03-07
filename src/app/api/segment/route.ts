@@ -56,39 +56,67 @@ export async function POST(req: NextRequest) {
 
     const data: RoboflowResponse = await response.json();
 
-    // Convert pixel polygons to percentage-based for SVG overlay
-    const masks: { polygon: string; confidence: number; bbox: number[] }[] = [];
+    // Shoelace formula for polygon area
+    function polyArea(polygon: [number, number][]): number {
+      let area = 0;
+      for (let i = 0; i < polygon.length; i++) {
+        const j = (i + 1) % polygon.length;
+        area += polygon[i][0] * polygon[j][1];
+        area -= polygon[j][0] * polygon[i][1];
+      }
+      return Math.abs(area) / 2;
+    }
+
+    // Collect all polygon fragments with their areas
+    const allFragments: { polygon: [number, number][]; confidence: number; area: number }[] = [];
 
     for (const promptResult of data.prompt_results) {
       for (const prediction of promptResult.predictions) {
         for (const polygon of prediction.masks) {
           if (polygon.length < 3) continue;
-
-          // Convert pixel coords to percentage of viewport
-          const percentPoints = polygon
-            .map(([x, y]) => {
-              const px = (x / width) * 100;
-              const py = (y / height) * 100;
-              return `${px.toFixed(2)},${py.toFixed(2)}`;
-            })
-            .join(" ");
-
-          // Bounding box
-          const xs = polygon.map(([x]) => x);
-          const ys = polygon.map(([, y]) => y);
-
-          masks.push({
-            polygon: percentPoints,
-            confidence: prediction.confidence,
-            bbox: [
-              Math.min(...xs),
-              Math.min(...ys),
-              Math.max(...xs) - Math.min(...xs),
-              Math.max(...ys) - Math.min(...ys),
-            ],
-          });
+          const area = polyArea(polygon);
+          allFragments.push({ polygon, confidence: prediction.confidence, area });
         }
       }
+    }
+
+    // Sort by area descending, filter out tiny fragments (< 0.2% of image)
+    const minAreaPx = width * height * 0.002;
+    const significant = allFragments
+      .filter((f) => f.area >= minAreaPx)
+      .sort((a, b) => b.area - a.area);
+
+    // Fall back to largest fragment if none pass threshold
+    if (significant.length === 0 && allFragments.length > 0) {
+      allFragments.sort((a, b) => b.area - a.area);
+      significant.push(allFragments[0]);
+    }
+
+    // Convert top 3 to percentage-based for SVG overlay
+    const masks: { polygon: string; confidence: number; bbox: number[] }[] = [];
+
+    for (const fragment of significant.slice(0, 3)) {
+      const percentPoints = fragment.polygon
+        .map(([x, y]) => {
+          const px = (x / width) * 100;
+          const py = (y / height) * 100;
+          return `${px.toFixed(2)},${py.toFixed(2)}`;
+        })
+        .join(" ");
+
+      const xs = fragment.polygon.map(([x]) => x);
+      const ys = fragment.polygon.map(([, y]) => y);
+
+      masks.push({
+        polygon: percentPoints,
+        confidence: fragment.confidence,
+        bbox: [
+          Math.min(...xs),
+          Math.min(...ys),
+          Math.max(...xs) - Math.min(...xs),
+          Math.max(...ys) - Math.min(...ys),
+        ],
+      });
     }
 
     return NextResponse.json({

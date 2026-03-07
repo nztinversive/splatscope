@@ -181,10 +181,11 @@ export function ExploreExperience({ initialSceneId }: ExploreExperienceProps) {
       if (masks.length > 0) {
         lastClickPointRef.current = point;
         lastQueryRef.current = null;
-        setSegmentMasks(masks);
+        // Show only the largest (first) mask for click segmentation
+        setSegmentMasks(masks.slice(0, 1));
         setViewMode("semantic");
         setSummary(
-          `SAM3 segmented ${masks.length} region${masks.length > 1 ? "s" : ""} at the clicked point`
+          `SAM3 segmented region at clicked point (${Math.round(masks[0].confidence * 100)}% confidence)`
         );
       } else if (isResegment) {
         setSummary("Could not refresh the clicked segmentation from this angle.");

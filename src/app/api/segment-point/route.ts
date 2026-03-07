@@ -126,6 +126,17 @@ function extractCandidatesFromPrediction(prediction: unknown): PolygonCandidate[
   return candidates;
 }
 
+/** Shoelace formula for polygon area in pixels */
+function polygonArea(polygon: Polygon): number {
+  let area = 0;
+  for (let i = 0; i < polygon.length; i++) {
+    const j = (i + 1) % polygon.length;
+    area += polygon[i][0] * polygon[j][1];
+    area -= polygon[j][0] * polygon[i][1];
+  }
+  return Math.abs(area) / 2;
+}
+
 function extractCandidates(responseData: unknown): PolygonCandidate[] {
   if (!isRecord(responseData)) {
     return [];
@@ -214,19 +225,30 @@ export async function POST(req: NextRequest) {
     }
 
     const data = (await response.json()) as unknown;
-    const candidates = extractCandidates(data).filter((candidate) => candidate.polygon.length >= 3);
+    const allCandidates = extractCandidates(data).filter((c) => c.polygon.length >= 3);
 
-    const bestCandidate =
-      candidates.length > 0
-        ? candidates.reduce((best, current) =>
-            current.confidence > best.confidence ? current : best
-          )
-        : null;
+    // Compute area for each candidate and filter out tiny fragments
+    const minAreaPx = width * height * 0.002; // at least 0.2% of image
+    const withArea = allCandidates
+      .map((c) => ({ ...c, area: polygonArea(c.polygon) }))
+      .filter((c) => c.area >= minAreaPx)
+      .sort((a, b) => b.area - a.area); // largest first
+
+    // Take top 3 by area (SAM typically returns small/medium/large)
+    const topCandidates = withArea.slice(0, 3);
+
+    // If no candidates pass area filter, fall back to largest regardless
+    if (topCandidates.length === 0 && allCandidates.length > 0) {
+      const largest = allCandidates
+        .map((c) => ({ ...c, area: polygonArea(c.polygon) }))
+        .sort((a, b) => b.area - a.area)[0];
+      topCandidates.push(largest);
+    }
 
     const masks: { polygon: string; confidence: number; bbox: number[] }[] = [];
 
-    if (bestCandidate) {
-      const percentPoints = bestCandidate.polygon
+    for (const candidate of topCandidates) {
+      const percentPoints = candidate.polygon
         .map(([x, y]) => {
           const px = (x / width) * 100;
           const py = (y / height) * 100;
@@ -234,12 +256,12 @@ export async function POST(req: NextRequest) {
         })
         .join(" ");
 
-      const xs = bestCandidate.polygon.map(([x]) => x);
-      const ys = bestCandidate.polygon.map(([, y]) => y);
+      const xs = candidate.polygon.map(([x]) => x);
+      const ys = candidate.polygon.map(([, y]) => y);
 
       masks.push({
         polygon: percentPoints,
-        confidence: bestCandidate.confidence,
+        confidence: candidate.confidence,
         bbox: [
           Math.min(...xs),
           Math.min(...ys),
