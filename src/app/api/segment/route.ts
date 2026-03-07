@@ -81,7 +81,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Sort by area descending, filter out tiny fragments (< 0.2% of image)
-    const minAreaPx = width * height * 0.002;
+    const minAreaPx = width * height * 0.0005;
     const significant = allFragments
       .filter((f) => f.area >= minAreaPx)
       .sort((a, b) => b.area - a.area);

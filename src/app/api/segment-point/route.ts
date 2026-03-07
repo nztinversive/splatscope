@@ -207,13 +207,24 @@ export async function POST(req: NextRequest) {
 
     const base64 = image.replace(/^data:image\/\w+;base64,/, "");
 
+    // Build a box prompt around the click point for better SAM results on noisy renders
+    const mainPoint = sanitizedPoints[0];
+    const boxPad = Math.max(width, height) * 0.12; // 12% padding for context
+    const box = {
+      x: Math.max(0, mainPoint.x - boxPad),
+      y: Math.max(0, mainPoint.y - boxPad),
+      width: Math.min(width - Math.max(0, mainPoint.x - boxPad), boxPad * 2),
+      height: Math.min(height - Math.max(0, mainPoint.y - boxPad), boxPad * 2),
+    };
+
+    // Try box + point prompt first (more reliable on splat renders)
     const response = await fetch(`${SAM3_POINT_ENDPOINT}?api_key=${ROBOFLOW_API_KEY}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         format: "json",
         image: { type: "base64", value: base64 },
-        prompts: [{ points: sanitizedPoints }],
+        prompts: [{ points: sanitizedPoints, box }],
         multimask_output: true,
       }),
     });
@@ -228,7 +239,7 @@ export async function POST(req: NextRequest) {
     const allCandidates = extractCandidates(data).filter((c) => c.polygon.length >= 3);
 
     // Compute area for each candidate and filter out tiny fragments
-    const minAreaPx = width * height * 0.002; // at least 0.2% of image
+    const minAreaPx = width * height * 0.0005; // at least 0.05% of image
     const withArea = allCandidates
       .map((c) => ({ ...c, area: polygonArea(c.polygon) }))
       .filter((c) => c.area >= minAreaPx)
