@@ -328,3 +328,50 @@ export async function runRealSegmentation(
     return [];
   }
 }
+
+export async function runPointSegmentation(
+  viewportImage: string,
+  clickX: number,
+  clickY: number,
+  width: number,
+  height: number
+): Promise<SegmentMask[]> {
+  const startedAt = Date.now();
+
+  try {
+    const response = await fetch("/api/segment-point", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        image: viewportImage,
+        points: [{ x: clickX, y: clickY, positive: true }],
+        width,
+        height,
+      }),
+    });
+
+    if (!response.ok) {
+      console.warn("Point segmentation API unavailable");
+      return [];
+    }
+
+    const data = await response.json();
+    const masks: SegmentMask[] = (data.masks || []).map(
+      (mask: { polygon: string; confidence: number }, i: number) => ({
+        polygon: mask.polygon,
+        confidence: mask.confidence,
+        color: COLOR_SWATCH[i % COLOR_SWATCH.length],
+        label: "Selection",
+      })
+    );
+
+    console.log(
+      `Point segmentation: ${masks.length} mask(s) in ${Date.now() - startedAt}ms`
+    );
+
+    return masks;
+  } catch (err) {
+    console.warn("Point segmentation failed:", err);
+    return [];
+  }
+}

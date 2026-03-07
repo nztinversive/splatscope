@@ -10,15 +10,28 @@ import {
   USER_SCENES_STORAGE_KEY,
   USER_SCENES_UPDATED_EVENT,
 } from "@/lib/userScenes";
-import { runMockSemanticSearch, runRealSegmentation } from "@/lib/search";
-import { QueryHistoryEntry, SceneDefinition, SegmentMask, SemanticResult, ViewMode } from "@/types";
+import {
+  runMockSemanticSearch,
+  runPointSegmentation,
+  runRealSegmentation,
+} from "@/lib/search";
+import {
+  ClickPoint,
+  QueryHistoryEntry,
+  SceneDefinition,
+  SegmentMask,
+  SemanticResult,
+  ViewMode,
+} from "@/types";
 import { InfoPanel } from "./InfoPanel";
 import { SceneSelector } from "./SceneSelector";
 import { SearchBar } from "./SearchBar";
 import type { SplatViewerHandle } from "./SplatViewer";
 import { ViewModes } from "./ViewModes";
 
-const DynamicSplatViewer = dynamic(
+import React from "react";
+
+const DynamicSplatViewerInner = dynamic(
   () => import("@/components/viewer/SplatViewer").then((module) => module.SplatViewer),
   {
     ssr: false,
@@ -30,8 +43,20 @@ const DynamicSplatViewer = dynamic(
   }
 );
 
+// next/dynamic doesn't forward refs in Next 14, so we wrap with forwardRef
+const DynamicSplatViewer = React.forwardRef<
+  SplatViewerHandle,
+  React.ComponentProps<typeof DynamicSplatViewerInner>
+>(function DynamicSplatViewerRef(props, ref) {
+  return <DynamicSplatViewerInner {...props} ref={ref as never} />;
+});
+
 interface ExploreExperienceProps {
   initialSceneId?: string | null;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }
 
 export function ExploreExperience({ initialSceneId }: ExploreExperienceProps) {
@@ -50,9 +75,15 @@ export function ExploreExperience({ initialSceneId }: ExploreExperienceProps) {
   const [isSceneLoading, setIsSceneLoading] = useState(true);
   const [runtimePointCount, setRuntimePointCount] = useState<number | null>(null);
   const [segmentMasks, setSegmentMasks] = useState<SegmentMask[]>([]);
+  const [isPointSegmenting, setIsPointSegmenting] = useState(false);
+  const [clickIndicator, setClickIndicator] = useState<{ xPct: number; yPct: number } | null>(
+    null
+  );
+
   const viewerRef = useRef<SplatViewerHandle | null>(null);
   const searchTokenRef = useRef(0);
   const lastQueryRef = useRef<string | null>(null);
+  const lastClickPointRef = useRef<ClickPoint | null>(null);
   const reSegmentingRef = useRef(false);
 
   const availableScenes = useMemo(
@@ -69,6 +100,9 @@ export function ExploreExperience({ initialSceneId }: ExploreExperienceProps) {
     () => results.slice(0, 6).map((result) => result.region),
     [results]
   );
+  const hasActiveSegmentation =
+    segmentMasks.length > 0 || results.length > 0 || viewMode !== "normal";
+
   const handleLoadStateChange = useCallback((state: "idle" | "loading" | "ready" | "error") => {
     setIsSceneLoading(state === "loading");
   }, []);
@@ -76,6 +110,94 @@ export function ExploreExperience({ initialSceneId }: ExploreExperienceProps) {
   const syncUploadedScenes = useCallback(() => {
     setUploadedScenes(getUploadedSceneDefinitions());
   }, []);
+
+  const getImageDimensions = useCallback((imageDataUrl: string) => {
+    const image = new Image();
+    return new Promise<{ w: number; h: number }>((resolve) => {
+      image.onload = () => resolve({ w: image.naturalWidth, h: image.naturalHeight });
+      image.onerror = () => resolve({ w: 1280, h: 720 });
+      image.src = imageDataUrl;
+    });
+  }, []);
+
+  const runPointSegmentationForClick = useCallback(
+    async (point: ClickPoint): Promise<SegmentMask[]> => {
+      const viewportPng = viewerRef.current?.exportPNG();
+      if (!viewportPng) {
+        return [];
+      }
+
+      const dimensions = await getImageDimensions(viewportPng);
+      const canvasDimensions = viewerRef.current?.getCanvasDimensions();
+
+      let exportX = point.x * dimensions.w;
+      let exportY = point.y * dimensions.h;
+
+      if (
+        canvasDimensions &&
+        canvasDimensions.width > 0 &&
+        canvasDimensions.height > 0
+      ) {
+        const sourceX = point.x * canvasDimensions.width;
+        const sourceY = point.y * canvasDimensions.height;
+        const scaleX = dimensions.w / canvasDimensions.width;
+        const scaleY = dimensions.h / canvasDimensions.height;
+        exportX = sourceX * scaleX;
+        exportY = sourceY * scaleY;
+      }
+
+      const safeX = clamp(exportX, 0, Math.max(0, dimensions.w - 1));
+      const safeY = clamp(exportY, 0, Math.max(0, dimensions.h - 1));
+
+      return runPointSegmentation(viewportPng, safeX, safeY, dimensions.w, dimensions.h);
+    },
+    [getImageDimensions]
+  );
+
+  const runPointSegmentationFlow = useCallback(
+    async (point: ClickPoint, isResegment: boolean) => {
+      const token = searchTokenRef.current + 1;
+      searchTokenRef.current = token;
+
+      if (!isResegment) {
+        setSegmentMasks([]);
+      }
+
+      setResults([]);
+      setIsSearching(true);
+      setIsPointSegmenting(true);
+      setClickIndicator({ xPct: point.x * 100, yPct: point.y * 100 });
+      setSummary(
+        isResegment
+          ? "Re-segmenting clicked object from new angle..."
+          : "Segmenting clicked object with SAM3..."
+      );
+
+      const masks = await runPointSegmentationForClick(point);
+      if (searchTokenRef.current !== token) {
+        return;
+      }
+
+      if (masks.length > 0) {
+        lastClickPointRef.current = point;
+        lastQueryRef.current = null;
+        setSegmentMasks(masks);
+        setViewMode("semantic");
+        setSummary(
+          `SAM3 segmented ${masks.length} region${masks.length > 1 ? "s" : ""} at the clicked point`
+        );
+      } else if (isResegment) {
+        setSummary("Could not refresh the clicked segmentation from this angle.");
+      } else {
+        setSummary("No segment returned for that click. Try another point or use text search.");
+      }
+
+      setIsSearching(false);
+      setIsPointSegmenting(false);
+      setClickIndicator(null);
+    },
+    [runPointSegmentationForClick]
+  );
 
   useEffect(() => {
     syncUploadedScenes();
@@ -104,11 +226,16 @@ export function ExploreExperience({ initialSceneId }: ExploreExperienceProps) {
   const handleSceneChange = useCallback(
     (sceneId: string) => {
       searchTokenRef.current += 1;
+      lastQueryRef.current = null;
+      lastClickPointRef.current = null;
+      reSegmentingRef.current = false;
       setSelectedSceneId(sceneId);
       setViewMode("normal");
       setSummary(null);
       setResults([]);
       setSegmentMasks([]);
+      setIsPointSegmenting(false);
+      setClickIndicator(null);
       setSceneLoadProgress(0);
       setRuntimePointCount(null);
       setIsSceneLoading(true);
@@ -133,6 +260,9 @@ export function ExploreExperience({ initialSceneId }: ExploreExperienceProps) {
     async (query: string) => {
       const token = searchTokenRef.current + 1;
       searchTokenRef.current = token;
+      lastClickPointRef.current = null;
+      setClickIndicator(null);
+      setIsPointSegmenting(false);
       setIsSearching(true);
       setSegmentMasks([]);
       setSummary(`Analyzing "${query}" with SAM3 vision model...`);
@@ -142,13 +272,7 @@ export function ExploreExperience({ initialSceneId }: ExploreExperienceProps) {
       let usedRealSegmentation = false;
 
       if (viewportPng) {
-        // Get viewport dimensions from the canvas
-        const img = new Image();
-        const dimensions = await new Promise<{ w: number; h: number }>((resolve) => {
-          img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
-          img.onerror = () => resolve({ w: 1280, h: 720 });
-          img.src = viewportPng;
-        });
+        const dimensions = await getImageDimensions(viewportPng);
 
         const masks = await runRealSegmentation(
           query,
@@ -177,7 +301,7 @@ export function ExploreExperience({ initialSceneId }: ExploreExperienceProps) {
             topConfidence: masks[0]?.confidence ?? 0,
           };
           setHistory((previous) => [historyEntry, ...previous].slice(0, 8));
-          // Don't move camera — mask is already on the current view
+          // Don't move camera - mask is already on the current view
           return;
         }
       }
@@ -210,12 +334,42 @@ export function ExploreExperience({ initialSceneId }: ExploreExperienceProps) {
         }
       }
     },
-    [selectedScene]
+    [getImageDimensions, selectedScene]
+  );
+
+  const handleCanvasClick = useCallback(
+    async (x: number, y: number, canvasWidth: number, canvasHeight: number) => {
+      if (isSceneLoading || canvasWidth <= 0 || canvasHeight <= 0) {
+        return;
+      }
+
+      const point: ClickPoint = {
+        x: clamp(x / canvasWidth, 0, 1),
+        y: clamp(y / canvasHeight, 0, 1),
+        positive: true,
+      };
+
+      await runPointSegmentationFlow(point, false);
+    },
+    [isSceneLoading, runPointSegmentationFlow]
   );
 
   const handleCameraStop = useCallback(async () => {
+    if (reSegmentingRef.current || isSearching) return;
+
+    const clickedPoint = lastClickPointRef.current;
+    if (clickedPoint) {
+      reSegmentingRef.current = true;
+      try {
+        await runPointSegmentationFlow(clickedPoint, true);
+      } finally {
+        reSegmentingRef.current = false;
+      }
+      return;
+    }
+
     const query = lastQueryRef.current;
-    if (!query || reSegmentingRef.current || isSearching) return;
+    if (!query) return;
 
     const viewportPng = viewerRef.current?.exportPNG();
     if (!viewportPng) return;
@@ -224,13 +378,7 @@ export function ExploreExperience({ initialSceneId }: ExploreExperienceProps) {
     setSummary(`Re-analyzing "${query}" from new angle...`);
 
     try {
-      const img = new Image();
-      const dimensions = await new Promise<{ w: number; h: number }>((resolve) => {
-        img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
-        img.onerror = () => resolve({ w: 1280, h: 720 });
-        img.src = viewportPng;
-      });
-
+      const dimensions = await getImageDimensions(viewportPng);
       const masks = await runRealSegmentation(query, viewportPng, dimensions.w, dimensions.h, query);
       if (masks.length > 0) {
         setSegmentMasks(masks);
@@ -241,7 +389,7 @@ export function ExploreExperience({ initialSceneId }: ExploreExperienceProps) {
     } finally {
       reSegmentingRef.current = false;
     }
-  }, [isSearching]);
+  }, [getImageDimensions, isSearching, runPointSegmentationFlow]);
 
   const handleResultClick = useCallback((result: SemanticResult) => {
     viewerRef.current?.focusOnTarget(result.target);
@@ -274,6 +422,20 @@ export function ExploreExperience({ initialSceneId }: ExploreExperienceProps) {
     }
   }, [selectedScene.id]);
 
+  const handleClear = useCallback(() => {
+    searchTokenRef.current += 1;
+    lastQueryRef.current = null;
+    lastClickPointRef.current = null;
+    reSegmentingRef.current = false;
+    setIsSearching(false);
+    setIsPointSegmenting(false);
+    setClickIndicator(null);
+    setSegmentMasks([]);
+    setResults([]);
+    setViewMode("normal");
+    setSummary("Segmentation cleared.");
+  }, []);
+
   return (
     <main className="relative h-screen w-full overflow-hidden bg-[#0A0A0F]">
       <DynamicSplatViewer
@@ -287,7 +449,21 @@ export function ExploreExperience({ initialSceneId }: ExploreExperienceProps) {
         onLoadStateChange={handleLoadStateChange}
         onSceneLoaded={setRuntimePointCount}
         onCameraStop={handleCameraStop}
+        onCanvasClick={handleCanvasClick}
       />
+
+      {isPointSegmenting && clickIndicator ? (
+        <div className="pointer-events-none absolute inset-0 z-30">
+          <div
+            className="absolute -translate-x-1/2 -translate-y-1/2"
+            style={{ left: `${clickIndicator.xPct}%`, top: `${clickIndicator.yPct}%` }}
+          >
+            <span className="absolute left-1/2 top-1/2 h-10 w-10 -translate-x-1/2 -translate-y-1/2 animate-ping rounded-full border border-cyan-300/70" />
+            <span className="absolute left-1/2 top-1/2 h-6 w-6 -translate-x-1/2 -translate-y-1/2 rounded-full border border-cyan-200/90" />
+            <span className="absolute left-1/2 top-1/2 h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-cyan-100" />
+          </div>
+        </div>
+      ) : null}
 
       <div className="pointer-events-none absolute left-4 top-4 z-20 flex items-center gap-2 rounded-xl border border-slate-700/80 bg-slate-950/60 px-3 py-2 text-sm text-slate-100">
         <span className="rounded-md bg-blue-500/20 p-1 text-blue-200">
@@ -297,7 +473,22 @@ export function ExploreExperience({ initialSceneId }: ExploreExperienceProps) {
       </div>
 
       <div className="pointer-events-none absolute left-1/2 top-4 z-20 w-[min(92vw,820px)] -translate-x-1/2 px-2 pt-12 md:pt-0">
-        <SearchBar onSearch={handleSearch} isSearching={isSearching} summary={summary} />
+        <SearchBar
+          onSearch={handleSearch}
+          isSearching={isSearching}
+          summary={summary}
+          hintText="Click any object to segment, or search by text"
+        />
+        <div className="pointer-events-auto mt-2 flex justify-end">
+          <button
+            type="button"
+            onClick={handleClear}
+            disabled={!hasActiveSegmentation || isSearching}
+            className="rounded-lg border border-slate-600/90 bg-slate-900/80 px-3 py-1.5 text-xs font-medium text-slate-200 transition hover:border-cyan-400/70 hover:text-cyan-100 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Clear
+          </button>
+        </div>
       </div>
 
       <div className="absolute left-4 top-[5.5rem] z-20 flex flex-col gap-3">
@@ -323,3 +514,4 @@ export function ExploreExperience({ initialSceneId }: ExploreExperienceProps) {
     </main>
   );
 }
+

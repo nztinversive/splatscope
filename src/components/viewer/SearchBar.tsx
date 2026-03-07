@@ -9,6 +9,7 @@ interface SearchBarProps {
   isSearching: boolean;
   summary: string | null;
   initialQuery?: string;
+  hintText?: string;
 }
 
 export function SearchBar({
@@ -16,6 +17,7 @@ export function SearchBar({
   isSearching,
   summary,
   initialQuery = "",
+  hintText = "Search any object in the scene - powered by SAM3 vision segmentation.",
 }: SearchBarProps) {
   const [query, setQuery] = useState(initialQuery);
 
@@ -63,10 +65,11 @@ export function SearchBar({
               Running semantic analysis across the point cloud...
             </motion.span>
           ) : (
-            summary ?? "Search any object in the scene — powered by SAM3 vision segmentation."
+            summary ?? hintText
           )}
         </div>
       </form>
     </div>
   );
 }
+

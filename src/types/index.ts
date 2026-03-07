@@ -74,6 +74,12 @@ export interface SegmentMask {
   label?: string;
 }
 
+export interface ClickPoint {
+  x: number;
+  y: number;
+  positive: boolean;
+}
+
 export interface SegmentSearchResponse {
   query: string;
   maskCount: number;

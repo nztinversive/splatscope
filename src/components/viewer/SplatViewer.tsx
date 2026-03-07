@@ -28,6 +28,12 @@ interface SplatViewerProps {
   onLoadStateChange?: (state: LoadState) => void;
   onSceneLoaded?: (pointCount: number) => void;
   onCameraStop?: () => void;
+  onCanvasClick?: (
+    x: number,
+    y: number,
+    canvasWidth: number,
+    canvasHeight: number
+  ) => void;
 }
 
 interface FlightState {
@@ -41,6 +47,7 @@ interface FlightState {
 export interface SplatViewerHandle {
   focusOnTarget: (target: Vector3Like) => void;
   exportPNG: () => string | null;
+  getCanvasDimensions: () => { width: number; height: number } | null;
 }
 
 function easeInOutCubic(value: number): number {
@@ -124,6 +131,7 @@ export const SplatViewer = forwardRef<SplatViewerHandle, SplatViewerProps>(
       onLoadStateChange,
       onSceneLoaded,
       onCameraStop,
+      onCanvasClick,
     },
     ref
   ) {
@@ -142,6 +150,9 @@ export const SplatViewer = forwardRef<SplatViewerHandle, SplatViewerProps>(
     const cameraStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const onCameraStopRef = useRef(onCameraStop);
     onCameraStopRef.current = onCameraStop;
+    const onCanvasClickRef = useRef(onCanvasClick);
+    onCanvasClickRef.current = onCanvasClick;
+    const pointerDownRef = useRef<{ x: number; y: number } | null>(null);
     const [loadState, setLoadState] = useState<LoadState>("idle");
     const [loadProgress, setLoadProgress] = useState(0);
     const [projectedPolygons, setProjectedPolygons] = useState<
@@ -210,6 +221,11 @@ export const SplatViewer = forwardRef<SplatViewerHandle, SplatViewerProps>(
           ctx.drawImage(canvas, 0, 0, offscreen.width, offscreen.height);
           return offscreen.toDataURL("image/jpeg", 0.85);
         },
+        getCanvasDimensions: () => {
+          const canvas = rendererRef.current?.canvas;
+          if (!canvas) return null;
+          return { width: canvas.width, height: canvas.height };
+        },
       }),
       [focusOnTarget]
     );
@@ -274,6 +290,40 @@ export const SplatViewer = forwardRef<SplatViewerHandle, SplatViewerProps>(
 
       host.innerHTML = "";
       host.appendChild(renderer.canvas);
+
+      const clickThreshold = 5;
+      const handleMouseDown = (event: MouseEvent) => {
+        if (!interactive || event.button !== 0) return;
+        pointerDownRef.current = { x: event.clientX, y: event.clientY };
+      };
+      const handleMouseUp = (event: MouseEvent) => {
+        if (!interactive || event.button !== 0) return;
+
+        const pointerDown = pointerDownRef.current;
+        pointerDownRef.current = null;
+        if (!pointerDown) return;
+
+        const movement = Math.hypot(
+          event.clientX - pointerDown.x,
+          event.clientY - pointerDown.y
+        );
+        if (movement >= clickThreshold) return;
+
+        const rect = renderer.canvas.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return;
+
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+        if (x < 0 || y < 0 || x > rect.width || y > rect.height) return;
+
+        onCanvasClickRef.current?.(x, y, rect.width, rect.height);
+      };
+      const resetPointerDown = () => {
+        pointerDownRef.current = null;
+      };
+      renderer.canvas.addEventListener("mousedown", handleMouseDown);
+      renderer.canvas.addEventListener("mouseup", handleMouseUp);
+      renderer.canvas.addEventListener("mouseleave", resetPointerDown);
 
       sceneRef.current = gsplatScene;
       cameraRef.current = camera;
@@ -390,6 +440,9 @@ export const SplatViewer = forwardRef<SplatViewerHandle, SplatViewerProps>(
         controls.dispose();
         renderer.dispose();
         renderer.canvas.remove();
+        renderer.canvas.removeEventListener("mousedown", handleMouseDown);
+        renderer.canvas.removeEventListener("mouseup", handleMouseUp);
+        renderer.canvas.removeEventListener("mouseleave", resetPointerDown);
         sceneRef.current = null;
         cameraRef.current = null;
         rendererRef.current = null;
@@ -604,7 +657,7 @@ export const SplatViewer = forwardRef<SplatViewerHandle, SplatViewerProps>(
 
         {interactive ? (
           <div className="pointer-events-none absolute bottom-4 left-4 rounded-lg border border-slate-700/70 bg-slate-950/60 px-2.5 py-1.5 text-[11px] text-slate-300">
-            Drag: orbit | Scroll: zoom | Right-drag: pan
+            Click: segment | Drag: orbit | Scroll: zoom | Right-drag: pan
           </div>
         ) : null}
       </div>
