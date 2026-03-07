@@ -235,7 +235,22 @@ export const SplatViewer = forwardRef<SplatViewerHandle, SplatViewerProps>(
 
       const gsplatScene = new SPLAT.Scene();
       const camera = new SPLAT.Camera();
+
+      // Monkey-patch getContext so gsplat's WebGLRenderer gets preserveDrawingBuffer,
+      // which is required for canvas.toDataURL() to return actual pixels (for SAM3 export).
+      const origGetContext = HTMLCanvasElement.prototype.getContext;
+      HTMLCanvasElement.prototype.getContext = function (type: string, attrs?: Record<string, unknown>) {
+        if (type === "webgl2" || type === "webgl") {
+          attrs = { ...attrs, preserveDrawingBuffer: true };
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return origGetContext.call(this, type as any, attrs as any);
+      } as typeof origGetContext;
+
       const renderer = new SPLAT.WebGLRenderer();
+
+      // Restore original getContext immediately
+      HTMLCanvasElement.prototype.getContext = origGetContext;
       const controls = new SPLAT.OrbitControls(
         camera,
         renderer.canvas,
