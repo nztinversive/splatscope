@@ -11,16 +11,13 @@ import {
   USER_SCENES_UPDATED_EVENT,
 } from "@/lib/userScenes";
 import {
-  runMockSemanticSearch,
   runPointSegmentation,
   runRealSegmentation,
 } from "@/lib/search";
 import {
   ClickPoint,
   QueryHistoryEntry,
-  SceneDefinition,
   SegmentMask,
-  SemanticResult,
   ViewMode,
 } from "@/types";
 import { InfoPanel } from "./InfoPanel";
@@ -69,7 +66,7 @@ export function ExploreExperience({ initialSceneId }: ExploreExperienceProps) {
   const [viewMode, setViewMode] = useState<ViewMode>("normal");
   const [isSearching, setIsSearching] = useState(false);
   const [summary, setSummary] = useState<string | null>(null);
-  const [results, setResults] = useState<SemanticResult[]>([]);
+  const [results] = useState<never[]>([]);
   const [history, setHistory] = useState<QueryHistoryEntry[]>([]);
   const [sceneLoadProgress, setSceneLoadProgress] = useState(0);
   const [isSceneLoading, setIsSceneLoading] = useState(true);
@@ -95,10 +92,6 @@ export function ExploreExperience({ initialSceneId }: ExploreExperienceProps) {
       availableScenes.find((scene) => scene.id === selectedSceneId) ??
       getSceneById(DEFAULT_SCENE_ID),
     [availableScenes, selectedSceneId]
-  );
-  const semanticRegions = useMemo(
-    () => results.slice(0, 6).map((result) => result.region),
-    [results]
   );
   const hasActiveSegmentation =
     segmentMasks.length > 0 || results.length > 0 || viewMode !== "normal";
@@ -266,76 +259,43 @@ export function ExploreExperience({ initialSceneId }: ExploreExperienceProps) {
       setIsPointSegmenting(false);
       setIsSearching(true);
       setSegmentMasks([]);
-      setSummary(`Analyzing "${query}" with SAM3 vision model...`);
+      setSummary(`Detecting "${query}" with GroundingDINO + SAM...`);
 
-      // Try real SAM3 segmentation first
       const viewportPng = viewerRef.current?.exportPNG();
-      let usedRealSegmentation = false;
-
-      if (viewportPng) {
-        const dimensions = await getImageDimensions(viewportPng);
-
-        const masks = await runRealSegmentation(
-          query,
-          viewportPng,
-          dimensions.w,
-          dimensions.h,
-          query
-        );
-        if (searchTokenRef.current !== token) return;
-
-        if (masks.length > 0) {
-          usedRealSegmentation = true;
-          lastQueryRef.current = query;
-          setSegmentMasks(masks);
-          setViewMode("semantic");
-          setIsSearching(false);
-          setSummary(
-            `SAM3 found ${masks.length} region${masks.length > 1 ? "s" : ""} matching "${query}"`
-          );
-
-          const historyEntry: QueryHistoryEntry = {
-            id: `${selectedScene.id}-${Date.now()}`,
-            query,
-            createdAt: new Date().toISOString(),
-            totalMatches: masks.length,
-            topConfidence: masks[0]?.confidence ?? 0,
-          };
-          setHistory((previous) => [historyEntry, ...previous].slice(0, 8));
-          // Don't move camera - mask is already on the current view
-          return;
-        }
+      if (!viewportPng) {
+        setIsSearching(false);
+        setSummary("Could not capture viewport. Try again after the scene loads.");
+        return;
       }
 
-      // Fallback to mock search
-      if (!usedRealSegmentation) {
-        setSummary(`Analyzing "${query}" with semantic embeddings...`);
-        const response = await runMockSemanticSearch(query, selectedScene);
-        if (searchTokenRef.current !== token) return;
+      const dimensions = await getImageDimensions(viewportPng);
+      const masks = await runRealSegmentation(query, viewportPng, dimensions.w, dimensions.h);
+      if (searchTokenRef.current !== token) return;
 
-        setResults(response.results);
-        setIsSearching(false);
+      setIsSearching(false);
+
+      if (masks.length > 0) {
+        lastQueryRef.current = query;
+        setSegmentMasks(masks);
         setViewMode("semantic");
+        const labels = [...new Set(masks.map(m => m.label))].join(", ");
         setSummary(
-          `Found ${response.totalMatches} regions matching "${response.query}" in ${(response.durationMs / 1000).toFixed(1)}s`
+          `Found ${masks.length} region${masks.length > 1 ? "s" : ""}: ${labels}`
         );
 
-        const topConfidence = response.results[0]?.confidence ?? 0;
         const historyEntry: QueryHistoryEntry = {
-          id: `${response.sceneId}-${Date.now()}`,
-          query: response.query,
+          id: `${selectedScene.id}-${Date.now()}`,
+          query,
           createdAt: new Date().toISOString(),
-          totalMatches: response.totalMatches,
-          topConfidence,
+          totalMatches: masks.length,
+          topConfidence: masks[0]?.confidence ?? 0,
         };
         setHistory((previous) => [historyEntry, ...previous].slice(0, 8));
-
-        if (response.results[0]) {
-          viewerRef.current?.focusOnTarget(response.results[0].target);
-        }
+      } else {
+        setSummary(`No objects matching "${query}" found in the current view. Try rotating the scene or a different query.`);
       }
     },
-    [getImageDimensions, selectedScene]
+    [getImageDimensions, selectedScene.id]
   );
 
   const handleCanvasClick = useCallback(
@@ -380,7 +340,7 @@ export function ExploreExperience({ initialSceneId }: ExploreExperienceProps) {
 
     try {
       const dimensions = await getImageDimensions(viewportPng);
-      const masks = await runRealSegmentation(query, viewportPng, dimensions.w, dimensions.h, query);
+      const masks = await runRealSegmentation(query, viewportPng, dimensions.w, dimensions.h);
       if (masks.length > 0) {
         setSegmentMasks(masks);
         setSummary(`SAM3 found ${masks.length} region${masks.length > 1 ? "s" : ""} matching "${query}"`);
@@ -392,11 +352,8 @@ export function ExploreExperience({ initialSceneId }: ExploreExperienceProps) {
     }
   }, [getImageDimensions, isSearching, runPointSegmentationFlow]);
 
-  const handleResultClick = useCallback((result: SemanticResult) => {
-    viewerRef.current?.focusOnTarget(result.target);
-    setSummary(
-      `Navigating to "${result.label}" (${(result.confidence * 100).toFixed(0)}% confidence)`
-    );
+  const handleResultClick = useCallback(() => {
+    // No-op — mock results removed, kept for InfoPanel compatibility
   }, []);
 
   const handleExport = useCallback(() => {
@@ -443,7 +400,7 @@ export function ExploreExperience({ initialSceneId }: ExploreExperienceProps) {
         ref={viewerRef}
         scene={selectedScene}
         mode={viewMode}
-        semanticRegions={semanticRegions}
+        semanticRegions={[]}
         segmentMasks={segmentMasks}
         className="h-full w-full"
         onLoadProgress={setSceneLoadProgress}

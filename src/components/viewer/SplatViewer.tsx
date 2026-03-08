@@ -11,7 +11,7 @@ import {
 import { motion } from "framer-motion";
 import * as SPLAT from "gsplat";
 import { SceneDefinition, SegmentMask, SemanticRegion, Vector3Like, ViewMode } from "@/types";
-import { buildShapePolygon } from "@/lib/search";
+// buildShapePolygon removed — mock regions replaced by real GroundingDINO+SAM masks
 
 type LoadState = "idle" | "loading" | "ready" | "error";
 

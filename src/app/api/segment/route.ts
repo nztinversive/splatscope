@@ -1,20 +1,29 @@
 import { NextRequest, NextResponse } from "next/server";
 
 const ROBOFLOW_API_KEY = process.env.ROBOFLOW_API_KEY || "";
-const SAM3_ENDPOINT = "https://serverless.roboflow.com/sam3/concept_segment";
+const GROUNDING_DINO_ENDPOINT = "https://serverless.roboflow.com/grounding_dino/ground";
+const SAM3_ENDPOINT = "https://serverless.roboflow.com/sam3/segment";
 
-interface RoboflowPrediction {
+interface GroundingDinoDetection {
+  class_name: string;
   confidence: number;
-  masks: [number, number][][];
+  x: number;      // center x
+  y: number;      // center y
+  width: number;
+  height: number;
 }
 
-interface RoboflowPromptResult {
-  echo: { text: string };
-  predictions: RoboflowPrediction[];
+interface SAMPrediction {
+  confidence: number;
+  masks: [number, number][][]; // array of polygon rings
 }
 
-interface RoboflowResponse {
-  prompt_results: RoboflowPromptResult[];
+interface SAMPromptResult {
+  predictions: SAMPrediction[];
+}
+
+interface SAMResponse {
+  prompt_results: SAMPromptResult[];
 }
 
 export async function POST(req: NextRequest) {
@@ -25,7 +34,7 @@ export async function POST(req: NextRequest) {
 
     const body = await req.json();
     const { image, query, width, height } = body as {
-      image: string; // base64 PNG (no data: prefix)
+      image: string;
       query: string;
       width: number;
       height: number;
@@ -35,26 +44,65 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "image and query required" }, { status: 400 });
     }
 
-    // Strip data URL prefix if present
     const base64 = image.replace(/^data:image\/\w+;base64,/, "");
 
-    const response = await fetch(`${SAM3_ENDPOINT}?api_key=${ROBOFLOW_API_KEY}`, {
+    // Step 1: GroundingDINO — text query → bounding boxes
+    const dinoResponse = await fetch(`${GROUNDING_DINO_ENDPOINT}?api_key=${ROBOFLOW_API_KEY}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        image: { type: "base64", value: base64 },
+        text: query,
+        box_threshold: 0.2,
+        text_threshold: 0.2,
+      }),
+    });
+
+    if (!dinoResponse.ok) {
+      const text = await dinoResponse.text();
+      console.error("GroundingDINO error:", dinoResponse.status, text);
+      return NextResponse.json({ error: `GroundingDINO API error: ${dinoResponse.status}` }, { status: 502 });
+    }
+
+    const dinoData = await dinoResponse.json();
+    const detections: GroundingDinoDetection[] = dinoData.detections || [];
+
+    if (detections.length === 0) {
+      return NextResponse.json({ query, maskCount: 0, masks: [] });
+    }
+
+    // Take top 5 detections by confidence
+    const topDetections = detections
+      .sort((a, b) => b.confidence - a.confidence)
+      .slice(0, 5);
+
+    // Step 2: SAM3 — bounding boxes → pixel-perfect masks
+    const boxPrompts = topDetections.map(det => ({
+      type: "box" as const,
+      x: det.x - det.width / 2,
+      y: det.y - det.height / 2,
+      width: det.width,
+      height: det.height,
+    }));
+
+    const samResponse = await fetch(`${SAM3_ENDPOINT}?api_key=${ROBOFLOW_API_KEY}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         format: "polygon",
         image: { type: "base64", value: base64 },
-        prompts: [{ type: "text", text: query }],
+        prompts: boxPrompts,
       }),
     });
 
-    if (!response.ok) {
-      const text = await response.text();
-      console.error("Roboflow error:", response.status, text);
-      return NextResponse.json({ error: `SAM3 API error: ${response.status}` }, { status: 502 });
+    if (!samResponse.ok) {
+      const text = await samResponse.text();
+      console.error("SAM3 error:", samResponse.status, text);
+      // Fall back to just returning bounding boxes as rectangles
+      return respondWithBoxFallback(query, topDetections, width, height);
     }
 
-    const data: RoboflowResponse = await response.json();
+    const samData: SAMResponse = await samResponse.json();
 
     // Shoelace formula for polygon area
     function polyArea(polygon: [number, number][]): number {
@@ -67,36 +115,30 @@ export async function POST(req: NextRequest) {
       return Math.abs(area) / 2;
     }
 
-    // Collect all polygon fragments with their areas
-    const allFragments: { polygon: [number, number][]; confidence: number; area: number }[] = [];
+    const masks: { polygon: string; confidence: number; label: string; bbox: number[] }[] = [];
+    const minAreaPx = width * height * 0.0003;
 
-    for (const promptResult of data.prompt_results) {
+    for (let i = 0; i < samData.prompt_results.length; i++) {
+      const promptResult = samData.prompt_results[i];
+      const detection = topDetections[i];
+      if (!promptResult || !detection) continue;
+
+      // Collect all fragments from this prompt, pick the largest
+      let bestFragment: { polygon: [number, number][]; area: number } | null = null;
+
       for (const prediction of promptResult.predictions) {
         for (const polygon of prediction.masks) {
           if (polygon.length < 3) continue;
           const area = polyArea(polygon);
-          allFragments.push({ polygon, confidence: prediction.confidence, area });
+          if (area >= minAreaPx && (!bestFragment || area > bestFragment.area)) {
+            bestFragment = { polygon, area };
+          }
         }
       }
-    }
 
-    // Sort by area descending, filter out tiny fragments (< 0.2% of image)
-    const minAreaPx = width * height * 0.0005;
-    const significant = allFragments
-      .filter((f) => f.area >= minAreaPx)
-      .sort((a, b) => b.area - a.area);
+      if (!bestFragment) continue;
 
-    // Fall back to largest fragment if none pass threshold
-    if (significant.length === 0 && allFragments.length > 0) {
-      allFragments.sort((a, b) => b.area - a.area);
-      significant.push(allFragments[0]);
-    }
-
-    // Convert top 3 to percentage-based for SVG overlay
-    const masks: { polygon: string; confidence: number; bbox: number[] }[] = [];
-
-    for (const fragment of significant.slice(0, 3)) {
-      const percentPoints = fragment.polygon
+      const percentPoints = bestFragment.polygon
         .map(([x, y]) => {
           const px = (x / width) * 100;
           const py = (y / height) * 100;
@@ -104,12 +146,13 @@ export async function POST(req: NextRequest) {
         })
         .join(" ");
 
-      const xs = fragment.polygon.map(([x]) => x);
-      const ys = fragment.polygon.map(([, y]) => y);
+      const xs = bestFragment.polygon.map(([x]) => x);
+      const ys = bestFragment.polygon.map(([, y]) => y);
 
       masks.push({
         polygon: percentPoints,
-        confidence: fragment.confidence,
+        confidence: detection.confidence,
+        label: detection.class_name || query,
         bbox: [
           Math.min(...xs),
           Math.min(...ys),
@@ -119,14 +162,41 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // Sort by confidence descending
+    masks.sort((a, b) => b.confidence - a.confidence);
+
     return NextResponse.json({
       query,
       maskCount: masks.length,
-      masks,
+      masks: masks.slice(0, 5),
     });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Unknown error";
     console.error("Segment API error:", message);
     return NextResponse.json({ error: message }, { status: 500 });
   }
+}
+
+/** If SAM fails, return bounding box rectangles as polygon masks */
+function respondWithBoxFallback(
+  query: string,
+  detections: GroundingDinoDetection[],
+  width: number,
+  height: number
+) {
+  const masks = detections.map(det => {
+    const x1 = ((det.x - det.width / 2) / width) * 100;
+    const y1 = ((det.y - det.height / 2) / height) * 100;
+    const x2 = ((det.x + det.width / 2) / width) * 100;
+    const y2 = ((det.y + det.height / 2) / height) * 100;
+
+    return {
+      polygon: `${x1.toFixed(2)},${y1.toFixed(2)} ${x2.toFixed(2)},${y1.toFixed(2)} ${x2.toFixed(2)},${y2.toFixed(2)} ${x1.toFixed(2)},${y2.toFixed(2)}`,
+      confidence: det.confidence,
+      label: det.class_name || query,
+      bbox: [det.x - det.width / 2, det.y - det.height / 2, det.width, det.height],
+    };
+  });
+
+  return NextResponse.json({ query, maskCount: masks.length, masks });
 }
