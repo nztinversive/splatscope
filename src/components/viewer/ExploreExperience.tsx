@@ -28,7 +28,7 @@ import { ViewModes } from "./ViewModes";
 
 import React from "react";
 
-const DynamicSplatViewerInner = dynamic(
+const DynamicSplatViewer = dynamic(
   () => import("@/components/viewer/SplatViewer").then((module) => module.SplatViewer),
   {
     ssr: false,
@@ -38,15 +38,8 @@ const DynamicSplatViewerInner = dynamic(
       </div>
     ),
   }
-);
-
-// next/dynamic doesn't forward refs in Next 14, so we wrap with forwardRef
-const DynamicSplatViewer = React.forwardRef<
-  SplatViewerHandle,
-  React.ComponentProps<typeof DynamicSplatViewerInner>
->(function DynamicSplatViewerRef(props, ref) {
-  return <DynamicSplatViewerInner {...props} ref={ref as never} />;
-});
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+) as any;
 
 interface ExploreExperienceProps {
   initialSceneId?: string | null;
@@ -78,6 +71,11 @@ export function ExploreExperience({ initialSceneId }: ExploreExperienceProps) {
   );
 
   const viewerRef = useRef<SplatViewerHandle | null>(null);
+  // next/dynamic in Next 14 sometimes breaks ref forwarding — fall back to window global
+  const getViewer = useCallback((): SplatViewerHandle | null => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return viewerRef.current ?? (window as any).__splatViewerHandle ?? null;
+  }, []);
   const searchTokenRef = useRef(0);
   const lastQueryRef = useRef<string | null>(null);
   const lastClickPointRef = useRef<ClickPoint | null>(null);
@@ -115,13 +113,13 @@ export function ExploreExperience({ initialSceneId }: ExploreExperienceProps) {
 
   const runPointSegmentationForClick = useCallback(
     async (point: ClickPoint): Promise<SegmentMask[]> => {
-      const viewportPng = viewerRef.current?.exportPNG();
+      const viewportPng = getViewer()?.exportPNG();
       if (!viewportPng) {
         return [];
       }
 
       const dimensions = await getImageDimensions(viewportPng);
-      const canvasDimensions = viewerRef.current?.getCanvasDimensions();
+      const canvasDimensions = getViewer()?.getCanvasDimensions();
 
       let exportX = point.x * dimensions.w;
       let exportY = point.y * dimensions.h;
@@ -261,7 +259,7 @@ export function ExploreExperience({ initialSceneId }: ExploreExperienceProps) {
       setSegmentMasks([]);
       setSummary(`Detecting "${query}" with GroundingDINO + SAM...`);
 
-      const viewportPng = viewerRef.current?.exportPNG();
+      const viewportPng = getViewer()?.exportPNG();
       if (!viewportPng) {
         setIsSearching(false);
         setSummary("Could not capture viewport. Try again after the scene loads.");
@@ -332,7 +330,7 @@ export function ExploreExperience({ initialSceneId }: ExploreExperienceProps) {
     const query = lastQueryRef.current;
     if (!query) return;
 
-    const viewportPng = viewerRef.current?.exportPNG();
+    const viewportPng = getViewer()?.exportPNG();
     if (!viewportPng) return;
 
     reSegmentingRef.current = true;
@@ -357,7 +355,7 @@ export function ExploreExperience({ initialSceneId }: ExploreExperienceProps) {
   }, []);
 
   const handleExport = useCallback(() => {
-    const image = viewerRef.current?.exportPNG();
+    const image = getViewer()?.exportPNG();
     if (!image) {
       setSummary("Export failed: scene is not ready yet.");
       return;

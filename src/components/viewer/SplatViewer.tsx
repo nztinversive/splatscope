@@ -5,6 +5,7 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -202,8 +203,7 @@ export const SplatViewer = forwardRef<SplatViewerHandle, SplatViewerProps>(
       [scene.cameraOffset.x, scene.cameraOffset.y, scene.cameraOffset.z]
     );
 
-    useImperativeHandle(
-      ref,
+    const handle: SplatViewerHandle = useMemo(
       () => ({
         focusOnTarget,
         exportPNG: () => {
@@ -229,6 +229,18 @@ export const SplatViewer = forwardRef<SplatViewerHandle, SplatViewerProps>(
       }),
       [focusOnTarget]
     );
+
+    useImperativeHandle(ref, () => handle, [handle]);
+
+    // Expose handle globally so parent can access even if next/dynamic breaks ref forwarding
+    useEffect(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (window as any).__splatViewerHandle = handle;
+      return () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        delete (window as any).__splatViewerHandle;
+      };
+    }, [handle]);
 
     useEffect(() => {
       const canvas = rendererRef.current?.canvas;
